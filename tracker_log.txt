@@ -1,0 +1,18 @@
+Checking UK (uni)
+Previous quantity: 0
+Current quantity:  0
+No event.
+Checking Japan (jap)
+Previous quantity: 0
+Current quantity:  0
+No event.
+Done.
+Checking UK (uni)
+Previous quantity: 0
+Current quantity:  0
+No event.
+Checking Japan (jap)
+Previous quantity: 0
+Current quantity:  0
+No event.
+Done.
