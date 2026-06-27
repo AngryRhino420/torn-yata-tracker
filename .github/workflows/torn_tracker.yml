@@ -1,1 +1,71 @@
+name: Torn Xanax Tracker
 
+on:
+
+  schedule:
+    - cron: "*/5 * * * *"
+
+  workflow_dispatch:
+
+
+jobs:
+
+  tracker:
+
+    runs-on: ubuntu-latest
+
+
+    steps:
+
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+
+
+    - name: Restore tracker state
+      uses: actions/cache@v4
+      with:
+        path: tracker_state.json
+        key: torn-tracker-state
+
+
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+
+
+    - name: Install libraries
+      run:
+
+        pip install -r requirements.txt
+
+
+
+    - name: Run tracker
+
+      env:
+
+        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+
+      run:
+
+        python torn_tracker.py
+
+
+
+    - name: Save tracker state
+
+      uses: actions/cache@v4
+
+      with:
+
+        path: tracker_state.json
+
+        key: torn-tracker-state
