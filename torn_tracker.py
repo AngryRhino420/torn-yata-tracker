@@ -1,7 +1,7 @@
 import json
 import os
 import statistics
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import requests
@@ -18,6 +18,7 @@ YATA_URL = "https://yata.yt/api/v1/travel/export/"
 
 
 TRACKED = {
+
     "uni": {
         "country": "UK",
         "item": "Xanax",
@@ -27,14 +28,16 @@ TRACKED = {
     "jap": {
         "country": "Japan",
         "item": "Xanax",
-        "id":206
+        "id": 206
     }
+
 }
 
 
 
 def now():
     return datetime.now(CET)
+
 
 
 def fmt(dt):
@@ -54,10 +57,7 @@ def google_sheet():
         )
 
 
-    with open(
-        "google.json",
-        "w"
-    ) as f:
+    with open("google.json","w") as f:
         f.write(creds)
 
 
@@ -65,9 +65,11 @@ def google_sheet():
         "google.json"
     )
 
+
     return client.open_by_url(
         SHEET_URL
     )
+
 
 
 
@@ -78,6 +80,7 @@ events = sheet.sheet1
 
 
 try:
+
     prediction_sheet = sheet.worksheet(
         "prediction"
     )
@@ -89,6 +92,7 @@ except:
         1000,
         20
     )
+
 
 
 
@@ -106,9 +110,12 @@ def discord(message):
         requests.post(
             hook,
             json={
-                "content":message
-            }
+                "content": message
+            },
+            timeout=10
         )
+
+
 
 
 
@@ -116,29 +123,74 @@ def discord(message):
 
 def load_state():
 
-    if os.path.exists(
+    if not os.path.exists(
         STATE_FILE
     ):
 
-        return json.load(
-            open(STATE_FILE)
+        return {}
+
+
+    try:
+
+        data=json.load(
+            open(
+                STATE_FILE
+            )
         )
 
-    return {}
+
+        fixed={}
+
+
+        for k,v in data.items():
+
+
+            # old format:
+            # {"qty":0}
+
+            if isinstance(v,dict):
+
+                fixed[k]=int(
+                    v.get(
+                        "qty",
+                        0
+                    )
+                )
+
+
+            else:
+
+                fixed[k]=int(v)
+
+
+
+        return fixed
+
+
+    except Exception:
+
+        return {}
+
+
+
 
 
 
 
 def save_state(state):
 
-    json.dump(
-        state,
-        open(
-            STATE_FILE,
-            "w"
-        ),
-        indent=2
-    )
+    with open(
+        STATE_FILE,
+        "w"
+    ) as f:
+
+        json.dump(
+            state,
+            f,
+            indent=2
+        )
+
+
 
 
 
@@ -151,7 +203,9 @@ def get_yata():
         timeout=20
     )
 
+
     r.raise_for_status()
+
 
     return r.json()
 
@@ -159,14 +213,22 @@ def get_yata():
 
 
 
+
+
+
 def find_xanax(country):
 
-    for item in country["stocks"]:
+    for item in country.get(
+        "stocks",
+        []
+    ):
 
-        if item["name"].lower()=="xanax":
+        if item.get(
+            "name",
+            ""
+        ).lower()=="xanax":
 
             return item
-
 
 
     return None
@@ -175,7 +237,10 @@ def find_xanax(country):
 
 
 
+
+
 def predict(country):
+
 
     rows = events.get_all_records()
 
@@ -185,6 +250,7 @@ def predict(country):
 
     for row in rows:
 
+
         if (
 
             row.get("event_type")=="restock"
@@ -193,24 +259,36 @@ def predict(country):
 
         ):
 
-            history.append(
 
-                datetime.strptime(
+            try:
 
-                    row["event_time"],
+                history.append(
 
-                    "%Y-%m-%d %H:%M:%S"
+                    datetime.strptime(
 
-                ).replace(
-                    tzinfo=CET
+                        row["event_time"],
+
+                        "%Y-%m-%d %H:%M:%S"
+
+                    ).replace(
+                        tzinfo=CET
+                    )
+
                 )
 
-            )
+
+            except:
+
+                pass
+
+
 
 
     if len(history)<3:
 
         return
+
+
 
 
 
@@ -230,26 +308,31 @@ def predict(country):
     )
 
 
-    next_time = history[-1]+median
+    next_time = history[-1] + median
+
 
 
     prediction_sheet.append_row(
 
         [
 
-        fmt(now()),
+            fmt(now()),
 
-        country,
+            country,
 
-        "Xanax",
+            "Xanax",
 
-        fmt(history[-1]),
+            fmt(history[-1]),
 
-        fmt(next_time)
+            fmt(next_time)
 
         ]
 
     )
+
+
+
+
 
 
 
@@ -264,33 +347,71 @@ def main():
 
 
     discord(
-        "🟢 Torn Xanax tracker running " + fmt(now())
+        "🟢 Torn Xanax tracker running "
+        + fmt(now())
     )
 
 
 
-    state=load_state()
+    state = load_state()
 
 
-    data=get_yata()
+    data = get_yata()
 
 
 
     for code,info in TRACKED.items():
 
 
-        xanax=find_xanax(
-            data["stocks"][code]
+        country_data = data["stocks"].get(
+            code
         )
+
+
+        if not country_data:
+
+            print(
+                "Missing YATA country",
+                code
+            )
+
+            continue
+
+
+
+
+        xanax=find_xanax(
+            country_data
+        )
+
+
+
+        if not xanax:
+
+            print(
+                "No Xanax data",
+                code
+            )
+
+            continue
+
+
 
 
         qty=int(
-            xanax["quantity"]
+            xanax.get(
+                "quantity",
+                0
+            )
         )
 
 
-        old=state.get(
-            code
+
+        old=int(
+            state.get(
+                code,
+                0
+            )
         )
 
 
@@ -305,61 +426,63 @@ def main():
 
 
 
-        # first run
 
-        if old is None:
+        if code not in state:
 
 
             events.append_row(
 
-            [
+                [
 
-            fmt(now()),
+                    fmt(now()),
 
-            "startup",
+                    "startup",
 
-            code,
+                    code,
 
-            info["country"],
+                    info["country"],
 
-            info["id"],
+                    info["id"],
 
-            info["item"],
+                    info["item"],
 
-            "",
+                    "",
 
-            qty
+                    qty
 
-            ]
+                ]
 
             )
+
+
 
 
 
         elif old==0 and qty>0:
 
 
+
             events.append_row(
 
-            [
+                [
 
-            fmt(now()),
+                    fmt(now()),
 
-            "restock",
+                    "restock",
 
-            code,
+                    code,
 
-            info["country"],
+                    info["country"],
 
-            info["id"],
+                    info["id"],
 
-            info["item"],
+                    info["item"],
 
-            old,
+                    old,
 
-            qty
+                    qty
 
-            ]
+                ]
 
             )
 
@@ -368,7 +491,9 @@ def main():
             discord(
 
                 f"🔔 Xanax restock {info['country']} {qty}"
+
             )
+
 
 
             predict(
@@ -377,36 +502,45 @@ def main():
 
 
 
+
+
+
         elif old>0 and qty==0:
+
 
 
             events.append_row(
 
-            [
+                [
 
-            fmt(now()),
+                    fmt(now()),
 
-            "depletion",
+                    "depletion",
 
-            code,
+                    code,
 
-            info["country"],
+                    info["country"],
 
-            info["id"],
+                    info["id"],
 
-            info["item"],
+                    info["item"],
 
-            old,
+                    old,
 
-            qty
+                    qty
 
-            ]
+                ]
 
             )
 
 
 
+
+
         state[code]=qty
+
+
+
 
 
 
@@ -417,6 +551,9 @@ def main():
     print(
         "Finished"
     )
+
+
+
 
 
 
