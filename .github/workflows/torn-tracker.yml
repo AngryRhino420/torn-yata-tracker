@@ -1,9 +1,9 @@
 name: Torn YATA Tracker
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
+  workflow_dispatch:
 
 jobs:
   run-tracker:
@@ -12,6 +12,11 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Log runtime
+        run: |
+          echo "UTC now: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Local now: $(date '+%Y-%m-%d %H:%M:%S %Z')"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -53,7 +58,14 @@ jobs:
           print(data.get("client_email", "missing client_email"))
           PY
 
+      - name: Show working directory
+        run: |
+          pwd
+          ls -la
+
       - name: Run tracker
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python torn_tracker.py
+        run: |
+          python --version
+          python torn_tracker.py
