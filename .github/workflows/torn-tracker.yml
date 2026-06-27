@@ -29,26 +29,41 @@ jobs:
         run: |
           echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > google-service-account.json
 
+      - name: Debug credentials file
+        shell: bash
+        run: |
+          echo "=== FILE EXISTS? ==="
+          ls -l google-service-account.json || true
+
+          echo "=== FILE SIZE ==="
+          wc -c google-service-account.json || true
+
+          echo "=== FIRST 100 CHARS ==="
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path("google-service-account.json")
+
+          print("exists:", p.exists())
+
+          if p.exists():
+              content = p.read_text(encoding="utf-8", errors="replace")
+              print("length:", len(content))
+              print("repr:", repr(content[:100]))
+          PY
+
       - name: Validate Google credentials JSON
         shell: bash
         run: |
           python - <<'PY'
           import json
-          from pathlib import Path
 
-          path = Path("google-service-account.json")
-
-          if not path.exists():
-              raise Exception("Credentials file does not exist")
-
-          if path.stat().st_size == 0:
-              raise Exception("Credentials file is empty")
-
-          with open(path, "r", encoding="utf-8") as f:
+          with open("google-service-account.json", "r", encoding="utf-8") as f:
               data = json.load(f)
 
           print("Valid JSON")
-          print("Service account:", data.get("client_email"))
+          print("Service account:")
+          print(data.get("client_email", "missing client_email"))
           PY
 
       - name: Show working directory
