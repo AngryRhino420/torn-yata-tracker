@@ -29,4 +29,4 @@ steps:
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
     run: |
       python torn_tracker.py
-```
+
