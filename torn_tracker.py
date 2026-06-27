@@ -25,7 +25,6 @@ TRAVEL_TIMES = {
     "Japan": timedelta(hours=2, minutes=22),
 }
 
-# prediction sheet column order
 PREDICTION_HEADERS = [
     "prediction_time",
     "country",
@@ -55,6 +54,24 @@ def get_gspread_client():
         f.write(creds_json)
 
     return gspread.service_account(filename=CREDS_FILE)
+
+
+def send_discord_message(message):
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
+        print("DISCORD_WEBHOOK_URL not set; skipping Discord notification.")
+        return
+
+    response = requests.post(
+        webhook_url,
+        json={"content": message},
+        timeout=20,
+    )
+
+    if response.status_code not in (200, 204):
+        print(f"Discord webhook failed: {response.status_code} {response.text}")
+    else:
+        print("Discord notification sent.")
 
 
 # === GOOGLE SHEETS SETUP ===
@@ -242,13 +259,15 @@ def append_prediction(country, item_name):
 def main():
     state = load_state()
     data = get_live_data()
-    now_str = fmt_dt(datetime.now())
+    now = datetime.now()
+    now_str = fmt_dt(now)
 
     for code, meta in TRACKED.items():
         country_data = data["stocks"][code]
         xanax = find_xanax(country_data)
 
         if not xanax:
+            print(f"No Xanax found for {meta['country']} ({code})")
             continue
 
         current_qty = int(xanax["quantity"])
@@ -278,7 +297,17 @@ def main():
             )
             print("Restock event logged.")
 
-            actual_restock_dt = parse_dt(now_str)
+            send_discord_message(
+                f"🔔 Restock detected\n"
+                f"Country: {meta['country']}\n"
+                f"Item: {meta['item_name']}\n"
+                f"Previous quantity: {previous_qty}\n"
+                f"Current quantity: {current_qty}\n"
+                f"Checked at: {now_str}\n"
+                f"YATA update: {yata_update}"
+            )
+
+            actual_restock_dt = now
             resolve_previous_prediction(meta["country"], meta["item_name"], actual_restock_dt)
             append_prediction(meta["country"], meta["item_name"])
 
@@ -297,6 +326,16 @@ def main():
                 "",
             )
             print("Depletion event logged.")
+
+            send_discord_message(
+                f"⚠️ Depletion detected\n"
+                f"Country: {meta['country']}\n"
+                f"Item: {meta['item_name']}\n"
+                f"Previous quantity: {previous_qty}\n"
+                f"Current quantity: {current_qty}\n"
+                f"Checked at: {now_str}\n"
+                f"YATA update: {yata_update}"
+            )
 
         else:
             print("No event.")
