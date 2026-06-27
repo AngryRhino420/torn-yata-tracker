@@ -1,6 +1,7 @@
 import json
 import os
 import statistics
+from collections import Counter
 from datetime import datetime, timedelta
 
 import gspread
@@ -31,11 +32,14 @@ PREDICTION_HEADERS = [
     "item_name",
     "last_restock",
     "median_interval",
-    "predicted_next_restock",
+    "raw_predicted_next_restock",
+    "adjusted_predicted_next_restock",
     "actual_next_restock",
-    "error_minutes",
+    "raw_error_minutes",
+    "adjusted_error_minutes",
     "travel_time",
     "leave_by_time",
+    "model_notes",
 ]
 
 
@@ -62,16 +66,18 @@ def send_discord_message(message):
         print("DISCORD_WEBHOOK_URL not set; skipping Discord notification.")
         return
 
-    response = requests.post(
-        webhook_url,
-        json={"content": message},
-        timeout=20,
-    )
-
-    if response.status_code not in (200, 204):
-        print(f"Discord webhook failed: {response.status_code} {response.text}")
-    else:
-        print("Discord notification sent.")
+    try:
+        response = requests.post(
+            webhook_url,
+            json={"content": message},
+            timeout=20,
+        )
+        if response.status_code not in (200, 204):
+            print(f"Discord webhook failed: {response.status_code} {response.text}")
+        else:
+            print("Discord notification sent.")
+    except Exception as e:
+        print(f"Discord notification error: {e}")
 
 
 # === GOOGLE SHEETS SETUP ===
@@ -79,6 +85,13 @@ gc = get_gspread_client()
 sh = gc.open_by_url(SHEET_URL)
 ws = sh.sheet1
 prediction_ws = sh.worksheet("prediction")
+
+
+def ensure_prediction_headers():
+    current_headers = prediction_ws.row_values(1)
+    if current_headers != PREDICTION_HEADERS:
+        prediction_ws.update("A1:M1", [PREDICTION_HEADERS])
+        print("Prediction sheet headers updated.")
 
 
 def load_state():
@@ -119,6 +132,46 @@ def fmt_td(td):
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
     return f"{hours:02d}:{minutes:02d}"
+
+
+def weighted_median_timedelta(timedeltas):
+    if not timedeltas:
+        raise ValueError("No timedeltas provided")
+
+    weighted_seconds = []
+    for i, td in enumerate(timedeltas, start=1):
+        seconds = int(td.total_seconds())
+        weighted_seconds.extend([seconds] * i)
+
+    median_seconds = statistics.median(weighted_seconds)
+    return timedelta(seconds=median_seconds)
+
+
+def remove_interval_outliers(intervals):
+    if len(intervals) < 4:
+        return intervals, []
+
+    interval_seconds = sorted(td.total_seconds() for td in intervals)
+    q1 = statistics.median(interval_seconds[: len(interval_seconds) // 2])
+    q3 = statistics.median(interval_seconds[(len(interval_seconds) + 1) // 2 :])
+    iqr = q3 - q1
+    lower_bound = q1 - (1.5 * iqr)
+    upper_bound = q3 + (1.5 * iqr)
+
+    filtered = []
+    removed = []
+
+    for td in intervals:
+        sec = td.total_seconds()
+        if lower_bound <= sec <= upper_bound:
+            filtered.append(td)
+        else:
+            removed.append(td)
+
+    if not filtered:
+        return intervals, []
+
+    return filtered, removed
 
 
 def append_event(
@@ -169,6 +222,7 @@ def get_restock_rows(country, item_name):
             restock_rows.append(row)
 
     restock_rows.sort(key=lambda r: parse_dt(r["event_time"]))
+    print(f"Found {len(restock_rows)} restock rows for {country} {item_name}")
     return restock_rows
 
 
@@ -182,12 +236,14 @@ def resolve_previous_prediction(country, item_name, actual_restock_time):
         row_country = str(row.get("country", "")).strip().lower()
         row_item = str(row.get("item_name", "")).strip().lower()
         actual_value = str(row.get("actual_next_restock", "")).strip()
-        predicted_value = str(row.get("predicted_next_restock", "")).strip()
+        adjusted_pred = str(row.get("adjusted_predicted_next_restock", "")).strip()
+        raw_pred = str(row.get("raw_predicted_next_restock", "")).strip()
 
         if (
             row_country == country.strip().lower()
             and row_item == item_name.strip().lower()
-            and predicted_value
+            and adjusted_pred
+            and raw_pred
             and not actual_value
         ):
             last_open_index = idx
@@ -197,70 +253,128 @@ def resolve_previous_prediction(country, item_name, actual_restock_time):
         print(f"No open prediction to resolve for {country} {item_name}")
         return
 
-    predicted_dt = parse_dt(last_open_row["predicted_next_restock"])
-    error_minutes = round((actual_restock_time - predicted_dt).total_seconds() / 60, 2)
+    raw_dt = parse_dt(last_open_row["raw_predicted_next_restock"])
+    adjusted_dt = parse_dt(last_open_row["adjusted_predicted_next_restock"])
+
+    raw_error_minutes = round((actual_restock_time - raw_dt).total_seconds() / 60, 2)
+    adjusted_error_minutes = round((actual_restock_time - adjusted_dt).total_seconds() / 60, 2)
 
     prediction_ws.update(
-        range_name=f"G{last_open_index}:H{last_open_index}",
-        values=[[fmt_dt(actual_restock_time), str(error_minutes)]]
+        range_name=f"H{last_open_index}:J{last_open_index}",
+        values=[[fmt_dt(actual_restock_time), str(raw_error_minutes), str(adjusted_error_minutes)]]
     )
 
     print(
-        f"Resolved prediction for {country} {item_name} "
-        f"with actual={fmt_dt(actual_restock_time)} error_minutes={error_minutes}"
+        f"Resolved prediction for {country} {item_name} with "
+        f"actual={fmt_dt(actual_restock_time)} "
+        f"raw_error_minutes={raw_error_minutes} "
+        f"adjusted_error_minutes={adjusted_error_minutes}"
     )
+
+
+def find_best_time_bucket(restock_times):
+    quarter_buckets = [((dt.hour), (dt.minute // 15) * 15) for dt in restock_times]
+    weekdays = [dt.weekday() for dt in restock_times]
+
+    common_bucket = Counter(quarter_buckets).most_common(1)[0][0]
+    common_weekday = Counter(weekdays).most_common(1)[0][0]
+
+    return common_bucket, common_weekday
 
 
 def append_prediction(country, item_name):
     restock_rows = get_restock_rows(country, item_name)
 
-    if len(restock_rows) < 2:
-        print(f"Not enough restock history to predict for {country} {item_name}")
+    if len(restock_rows) < 3:
+        print(
+            f"Not enough restock history to predict for {country} {item_name}. "
+            f"Need at least 3 restock rows, found {len(restock_rows)}."
+        )
         return
 
     restock_times = [parse_dt(r["event_time"]) for r in restock_rows]
-    intervals = []
+    raw_intervals = [
+        restock_times[i] - restock_times[i - 1]
+        for i in range(1, len(restock_times))
+    ]
 
-    for i in range(1, len(restock_times)):
-        intervals.append(restock_times[i] - restock_times[i - 1])
+    filtered_intervals, removed_outliers = remove_interval_outliers(raw_intervals)
+    weighted_interval = weighted_median_timedelta(filtered_intervals)
 
-    median_interval = statistics.median(intervals)
     last_restock = restock_times[-1]
-    predicted_next_restock = last_restock + median_interval
+    raw_prediction = last_restock + weighted_interval
 
-    minute = predicted_next_restock.minute
-    quarter_options = [0, 15, 30, 45]
-    closest_quarter = min(quarter_options, key=lambda q: abs(minute - q))
-    predicted_next_restock = predicted_next_restock.replace(
-        minute=closest_quarter, second=0, microsecond=0
+    common_bucket, common_weekday = find_best_time_bucket(restock_times)
+
+    adjusted_prediction = raw_prediction.replace(
+        hour=common_bucket[0],
+        minute=common_bucket[1],
+        second=0,
+        microsecond=0,
     )
 
+    while adjusted_prediction <= last_restock:
+        adjusted_prediction += timedelta(days=1)
+
+    if adjusted_prediction.weekday() != common_weekday:
+        days_ahead = (common_weekday - adjusted_prediction.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        adjusted_prediction += timedelta(days=days_ahead)
+
     travel_time = TRAVEL_TIMES[country]
-    leave_by_time = predicted_next_restock - travel_time
+    leave_by_time = adjusted_prediction - travel_time
     prediction_time = datetime.now()
+
+    notes = (
+        f"intervals={len(raw_intervals)}; "
+        f"used={len(filtered_intervals)}; "
+        f"outliers_removed={len(removed_outliers)}; "
+        f"common_bucket={common_bucket}; "
+        f"common_weekday={common_weekday}"
+    )
 
     prediction_row = [
         fmt_dt(prediction_time),
         country,
         item_name,
         fmt_dt(last_restock),
-        str(median_interval),
-        fmt_dt(predicted_next_restock),
+        str(weighted_interval),
+        fmt_dt(raw_prediction),
+        fmt_dt(adjusted_prediction),
+        "",
         "",
         "",
         fmt_td(travel_time),
         fmt_dt(leave_by_time),
+        notes,
     ]
 
     prediction_ws.append_row(prediction_row)
-    print(f"Prediction row added for {country} {item_name}")
+
+    print(
+        f"Prediction row added for {country} {item_name}: "
+        f"raw_prediction={fmt_dt(raw_prediction)}, "
+        f"adjusted_prediction={fmt_dt(adjusted_prediction)}, "
+        f"weighted_interval={weighted_interval}, "
+        f"removed_outliers={len(removed_outliers)}"
+    )
+
+
+def refresh_predictions_from_history():
+    for _, meta in TRACKED.items():
+        append_prediction(meta["country"], meta["item_name"])
 
 
 def main():
+    ensure_prediction_headers()
+
     state = load_state()
     data = get_live_data()
     now = datetime.now()
     now_str = fmt_dt(now)
+
+    send_discord_message(f"Torn YATA Tracker test run at {now_str}")
 
     for code, meta in TRACKED.items():
         country_data = data["stocks"][code]
@@ -276,7 +390,7 @@ def main():
 
         print(f"Checking {meta['country']} ({code})")
         print("Previous quantity:", previous_qty)
-        print("Current quantity: ", current_qty)
+        print("Current quantity:", current_qty)
 
         if previous_qty is None:
             print("First run for this country; storing state only.")
@@ -309,7 +423,6 @@ def main():
 
             actual_restock_dt = now
             resolve_previous_prediction(meta["country"], meta["item_name"], actual_restock_dt)
-            append_prediction(meta["country"], meta["item_name"])
 
         elif previous_qty > 0 and current_qty == 0:
             append_event(
@@ -345,6 +458,7 @@ def main():
             "yata_update": yata_update,
         }
 
+    refresh_predictions_from_history()
     save_state(state)
     print("Done.")
 
