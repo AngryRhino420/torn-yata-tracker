@@ -3,9 +3,14 @@ import os
 import statistics
 from collections import Counter
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import gspread
 import requests
+
+# === TIMEZONES ===
+CET_TZ = ZoneInfo("Europe/Berlin")  # CET/CEST with DST handled [web:1202]
+UTC_TZ = ZoneInfo("UTC")
 
 # === PATH SETUP ===
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -27,18 +32,18 @@ TRAVEL_TIMES = {
 }
 
 PREDICTION_HEADERS = [
-    "prediction_time",
+    "prediction_time_cet",
     "country",
     "item_name",
-    "last_restock",
-    "median_interval",
-    "raw_predicted_next_restock",
-    "adjusted_predicted_next_restock",
-    "actual_next_restock",
+    "last_restock_cet",
+    "weighted_interval",
+    "raw_predicted_next_restock_cet",
+    "adjusted_predicted_next_restock_cet",
+    "actual_next_restock_cet",
     "raw_error_minutes",
     "adjusted_error_minutes",
     "travel_time",
-    "leave_by_time",
+    "leave_by_time_cet",
     "model_notes",
 ]
 
@@ -90,8 +95,9 @@ prediction_ws = sh.worksheet("prediction")
 def ensure_prediction_headers():
     current_headers = prediction_ws.row_values(1)
     if current_headers != PREDICTION_HEADERS:
+        prediction_ws.clear()
         prediction_ws.update("A1:M1", [PREDICTION_HEADERS])
-        print("Prediction sheet headers updated.")
+        print("Prediction sheet headers set to CET-based schema.")
 
 
 def load_state():
@@ -119,15 +125,35 @@ def find_xanax(country_data):
     return None
 
 
-def fmt_dt(dt_obj):
-    return dt_obj.strftime("%Y-%m-%d %H:%M:%S")
+def to_cet_from_timestamp(ts: float) -> datetime:
+    """
+    Convert a Unix timestamp (assumed UTC/Torn-time) to timezone-aware CET datetime.
+    """
+    dt_utc = datetime.fromtimestamp(ts, tz=UTC_TZ)
+    return dt_utc.astimezone(CET_TZ)
 
 
-def parse_dt(dt_string):
-    return datetime.strptime(str(dt_string).strip(), "%Y-%m-%d %H:%M:%S")
+def now_cet() -> datetime:
+    return datetime.now(CET_TZ)
 
 
-def fmt_td(td):
+def fmt_dt(dt_obj: datetime) -> str:
+    """
+    Format timezone-aware CET datetime as a string without timezone suffix,
+    so the sheet stores consistent CET wall time.
+    """
+    return dt_obj.astimezone(CET_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def parse_cet(dt_string: str) -> datetime:
+    """
+    Parse a stored CET-formatted string and attach CET timezone.
+    """
+    naive = datetime.strptime(str(dt_string).strip(), "%Y-%m-%d %H:%M:%S")
+    return naive.replace(tzinfo=CET_TZ)
+
+
+def fmt_td(td: timedelta) -> str:
     total_seconds = int(td.total_seconds())
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
@@ -175,7 +201,7 @@ def remove_interval_outliers(intervals):
 
 
 def append_event(
-    event_time,
+    event_time_cet: datetime,
     event_type,
     code,
     country,
@@ -183,12 +209,12 @@ def append_event(
     item_name,
     previous_qty,
     current_qty,
-    yata_update,
+    yata_update_cet: datetime,
     source,
     notes,
 ):
     row = [
-        event_time,
+        fmt_dt(event_time_cet),
         event_type,
         code,
         country,
@@ -196,7 +222,7 @@ def append_event(
         item_name,
         str(previous_qty) if previous_qty is not None else "",
         str(current_qty),
-        yata_update,
+        fmt_dt(yata_update_cet),
         source,
         notes,
     ]
@@ -221,12 +247,12 @@ def get_restock_rows(country, item_name):
         ):
             restock_rows.append(row)
 
-    restock_rows.sort(key=lambda r: parse_dt(r["event_time"]))
+    restock_rows.sort(key=lambda r: parse_cet(r["event_time"]))
     print(f"Found {len(restock_rows)} restock rows for {country} {item_name}")
     return restock_rows
 
 
-def resolve_previous_prediction(country, item_name, actual_restock_time):
+def resolve_previous_prediction(country, item_name, actual_restock_cet: datetime):
     records = prediction_ws.get_all_records()
 
     last_open_index = None
@@ -235,9 +261,9 @@ def resolve_previous_prediction(country, item_name, actual_restock_time):
     for idx, row in enumerate(records, start=2):
         row_country = str(row.get("country", "")).strip().lower()
         row_item = str(row.get("item_name", "")).strip().lower()
-        actual_value = str(row.get("actual_next_restock", "")).strip()
-        adjusted_pred = str(row.get("adjusted_predicted_next_restock", "")).strip()
-        raw_pred = str(row.get("raw_predicted_next_restock", "")).strip()
+        actual_value = str(row.get("actual_next_restock_cet", "")).strip()
+        adjusted_pred = str(row.get("adjusted_predicted_next_restock_cet", "")).strip()
+        raw_pred = str(row.get("raw_predicted_next_restock_cet", "")).strip()
 
         if (
             row_country == country.strip().lower()
@@ -253,28 +279,28 @@ def resolve_previous_prediction(country, item_name, actual_restock_time):
         print(f"No open prediction to resolve for {country} {item_name}")
         return
 
-    raw_dt = parse_dt(last_open_row["raw_predicted_next_restock"])
-    adjusted_dt = parse_dt(last_open_row["adjusted_predicted_next_restock"])
+    raw_dt = parse_cet(last_open_row["raw_predicted_next_restock_cet"])
+    adjusted_dt = parse_cet(last_open_row["adjusted_predicted_next_restock_cet"])
 
-    raw_error_minutes = round((actual_restock_time - raw_dt).total_seconds() / 60, 2)
-    adjusted_error_minutes = round((actual_restock_time - adjusted_dt).total_seconds() / 60, 2)
+    raw_error_minutes = round((actual_restock_cet - raw_dt).total_seconds() / 60, 2)
+    adjusted_error_minutes = round((actual_restock_cet - adjusted_dt).total_seconds() / 60, 2)
 
     prediction_ws.update(
         range_name=f"H{last_open_index}:J{last_open_index}",
-        values=[[fmt_dt(actual_restock_time), str(raw_error_minutes), str(adjusted_error_minutes)]]
+        values=[[fmt_dt(actual_restock_cet), str(raw_error_minutes), str(adjusted_error_minutes)]]
     )
 
     print(
         f"Resolved prediction for {country} {item_name} with "
-        f"actual={fmt_dt(actual_restock_time)} "
+        f"actual_cet={fmt_dt(actual_restock_cet)} "
         f"raw_error_minutes={raw_error_minutes} "
         f"adjusted_error_minutes={adjusted_error_minutes}"
     )
 
 
-def find_best_time_bucket(restock_times):
-    quarter_buckets = [((dt.hour), (dt.minute // 15) * 15) for dt in restock_times]
-    weekdays = [dt.weekday() for dt in restock_times]
+def find_best_time_bucket(restock_times_cet):
+    quarter_buckets = [((dt.hour), (dt.minute // 15) * 15) for dt in restock_times_cet]
+    weekdays = [dt.weekday() for dt in restock_times_cet]
 
     common_bucket = Counter(quarter_buckets).most_common(1)[0][0]
     common_weekday = Counter(weekdays).most_common(1)[0][0]
@@ -292,7 +318,8 @@ def append_prediction(country, item_name):
         )
         return
 
-    restock_times = [parse_dt(r["event_time"]) for r in restock_rows]
+    restock_times = [parse_cet(r["event_time"]) for r in restock_rows]
+
     raw_intervals = [
         restock_times[i] - restock_times[i - 1]
         for i in range(1, len(restock_times))
@@ -324,7 +351,7 @@ def append_prediction(country, item_name):
 
     travel_time = TRAVEL_TIMES[country]
     leave_by_time = adjusted_prediction - travel_time
-    prediction_time = datetime.now()
+    prediction_time = now_cet()
 
     notes = (
         f"intervals={len(raw_intervals)}; "
@@ -354,8 +381,8 @@ def append_prediction(country, item_name):
 
     print(
         f"Prediction row added for {country} {item_name}: "
-        f"raw_prediction={fmt_dt(raw_prediction)}, "
-        f"adjusted_prediction={fmt_dt(adjusted_prediction)}, "
+        f"raw_prediction_cet={fmt_dt(raw_prediction)}, "
+        f"adjusted_prediction_cet={fmt_dt(adjusted_prediction)}, "
         f"weighted_interval={weighted_interval}, "
         f"removed_outliers={len(removed_outliers)}"
     )
@@ -371,10 +398,10 @@ def main():
 
     state = load_state()
     data = get_live_data()
-    now = datetime.now()
+    now = now_cet()
     now_str = fmt_dt(now)
 
-    send_discord_message(f"Torn YATA Tracker test run at {now_str}")
+    send_discord_message(f"Torn YATA Tracker test run at {now_str} (CET)")
 
     for code, meta in TRACKED.items():
         country_data = data["stocks"][code]
@@ -385,7 +412,8 @@ def main():
             continue
 
         current_qty = int(xanax["quantity"])
-        yata_update = fmt_dt(datetime.fromtimestamp(country_data["update"]))
+
+        yata_update_cet = to_cet_from_timestamp(country_data["update"])
         previous_qty = state.get(code, {}).get("quantity")
 
         print(f"Checking {meta['country']} ({code})")
@@ -397,7 +425,7 @@ def main():
 
         elif previous_qty == 0 and current_qty > 0:
             append_event(
-                now_str,
+                now,
                 "restock",
                 code,
                 meta["country"],
@@ -405,28 +433,28 @@ def main():
                 meta["item_name"],
                 previous_qty,
                 current_qty,
-                yata_update,
+                yata_update_cet,
                 "live_yata",
                 "",
             )
-            print("Restock event logged.")
+            print("Restock event logged (CET).")
 
             send_discord_message(
-                f"🔔 Restock detected\n"
+                f"🔔 Restock detected (CET)\n"
                 f"Country: {meta['country']}\n"
                 f"Item: {meta['item_name']}\n"
                 f"Previous quantity: {previous_qty}\n"
                 f"Current quantity: {current_qty}\n"
-                f"Checked at: {now_str}\n"
-                f"YATA update: {yata_update}"
+                f"Checked at (CET): {now_str}\n"
+                f"YATA update (CET): {fmt_dt(yata_update_cet)}"
             )
 
-            actual_restock_dt = now
-            resolve_previous_prediction(meta["country"], meta["item_name"], actual_restock_dt)
+            actual_restock_cet = now
+            resolve_previous_prediction(meta["country"], meta["item_name"], actual_restock_cet)
 
         elif previous_qty > 0 and current_qty == 0:
             append_event(
-                now_str,
+                now,
                 "depletion",
                 code,
                 meta["country"],
@@ -434,20 +462,20 @@ def main():
                 meta["item_name"],
                 previous_qty,
                 current_qty,
-                yata_update,
+                yata_update_cet,
                 "live_yata",
                 "",
             )
-            print("Depletion event logged.")
+            print("Depletion event logged (CET).")
 
             send_discord_message(
-                f"⚠️ Depletion detected\n"
+                f"⚠️ Depletion detected (CET)\n"
                 f"Country: {meta['country']}\n"
                 f"Item: {meta['item_name']}\n"
                 f"Previous quantity: {previous_qty}\n"
                 f"Current quantity: {current_qty}\n"
-                f"Checked at: {now_str}\n"
-                f"YATA update: {yata_update}"
+                f"Checked at (CET): {now_str}\n"
+                f"YATA update (CET): {fmt_dt(yata_update_cet)}"
             )
 
         else:
@@ -455,7 +483,7 @@ def main():
 
         state[code] = {
             "quantity": current_qty,
-            "yata_update": yata_update,
+            "yata_update_cet": fmt_dt(yata_update_cet),
         }
 
     refresh_predictions_from_history()
