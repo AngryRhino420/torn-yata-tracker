@@ -22,12 +22,45 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Create Google credentials file
+        shell: bash
         run: |
-          cat <<'EOF' > google-service-account.json
-          ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          EOF
+          printf '%s' "${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON_B64 }}" | base64 --decode > google-service-account.json
+
+      - name: Inspect credentials file
+        shell: bash
+        run: |
+          echo "=== FILE INFO ==="
+          ls -l google-service-account.json || true
+          wc -c google-service-account.json || true
+          echo "=== FIRST 200 CHARS ==="
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("google-service-account.json")
+          if not p.exists():
+              print("FILE DOES NOT EXIST")
+          else:
+              text = p.read_text(encoding="utf-8", errors="replace")
+              print(repr(text[:200]))
+          PY
+
+      - name: Validate Google credentials JSON
+        run: |
+          python - <<'PY'
+          import json
+          with open("google-service-account.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+          print("valid json")
+          print(data.get("client_email", "missing client_email"))
+          PY
+
+      - name: Show working directory
+        run: |
+          pwd
+          ls -la
 
       - name: Run tracker
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python torn_tracker.py
+        run: |
+          python --version
+          python torn_tracker.py
