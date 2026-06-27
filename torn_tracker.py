@@ -40,7 +40,16 @@ PREDICTION_HEADERS = [
 ]
 
 # === GOOGLE SHEETS SETUP ===
-gc = gspread.service_account(filename=CREDS_FILE)
+import os
+import json
+import gspread
+
+credentials = json.loads(
+os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+)
+
+client = gspread.service_account_from_dict(credentials)
+
 sh = gc.open_by_url(SHEET_URL)
 ws = sh.sheet1
 prediction_ws = sh.worksheet("prediction")
