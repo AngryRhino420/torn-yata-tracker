@@ -1,68 +1,117 @@
-import json
 import os
 import statistics
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
 import gspread
+from google.oauth2.service_account import Credentials
 
+
+# ==========================
+# CONFIG
+# ==========================
 
 CET = ZoneInfo("Europe/Berlin")
 
-STATE_FILE = "tracker_state.json"
 
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1txgKmKuLZB3iGpsLG8U-j_Z5gfyMdr_lKXNfNZNI2es/edit?gid=0#gid=0"
+SHEET_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1txgKmKuLZB3iGpsLG8U-j_Z5gfyMdr_lKXNfNZNI2es/edit"
+)
 
-YATA_URL = "https://yata.yt/api/v1/travel/export/"
+
+YATA_URL = (
+    "https://yata.yt/api/v1/travel/export/"
+)
+
 
 
 TRACKED = {
 
+
     "uni": {
+
         "country": "UK",
         "item": "Xanax",
-        "id": 206
+        "id": 206,
+        "travel": 20
+
     },
 
+
     "jap": {
+
         "country": "Japan",
         "item": "Xanax",
-        "id": 206
+        "id": 206,
+        "travel": 30
+
     }
+
 
 }
 
 
 
+# ==========================
+# TIME
+# ==========================
+
+
 def now():
+
     return datetime.now(CET)
 
 
 
 def fmt(dt):
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
+    return dt.strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+
+
+# ==========================
+# GOOGLE SHEETS
+# ==========================
 
 
 def google_sheet():
 
-    creds = os.environ.get(
+
+    creds_json = os.environ.get(
         "GOOGLE_SERVICE_ACCOUNT_JSON"
     )
 
-    if not creds:
+
+    if not creds_json:
+
         raise Exception(
             "Missing GOOGLE_SERVICE_ACCOUNT_JSON"
         )
 
 
-    with open("google.json","w") as f:
-        f.write(creds)
+
+    with open(
+        "google.json",
+        "w"
+    ) as f:
+
+        f.write(
+            creds_json
+        )
 
 
-    client = gspread.service_account(
+
+    credentials = Credentials.from_service_account_file(
         "google.json"
+    )
+
+
+    client = gspread.authorize(
+        credentials
     )
 
 
@@ -73,144 +122,136 @@ def google_sheet():
 
 
 
-
 sheet = google_sheet()
 
-events = sheet.sheet1
 
 
-try:
+events_sheet = sheet.worksheet(
+    "events"
+)
 
-    prediction_sheet = sheet.worksheet(
-        "prediction"
-    )
 
-except:
+prediction_sheet = sheet.worksheet(
+    "prediction"
+)
 
-    prediction_sheet = sheet.add_worksheet(
-        "prediction",
-        1000,
-        20
-    )
 
+state_sheet = sheet.worksheet(
+    "state"
+)
 
 
 
+# ==========================
+# DISCORD
+# ==========================
 
 
 def discord(message):
 
-    hook = os.environ.get(
+
+    webhook = os.environ.get(
         "DISCORD_WEBHOOK_URL"
     )
 
 
-    if hook:
+    if webhook:
+
 
         requests.post(
-            hook,
+
+            webhook,
+
             json={
                 "content": message
             },
+
             timeout=10
+
         )
 
 
 
 
 
+# ==========================
+# STATE
+# ==========================
 
 
 def load_state():
 
-    if not os.path.exists(
-        STATE_FILE
-    ):
 
-        return {}
+    rows = state_sheet.get_all_records()
 
 
-    try:
+    result = {}
 
-        data=json.load(
-            open(
-                STATE_FILE
+
+    for row in rows:
+
+
+        result[
+            row["country"]
+        ] = int(
+            row["quantity"]
+        )
+
+
+    return result
+
+
+
+
+def save_state(country, qty):
+
+
+    rows = state_sheet.get_all_records()
+
+
+
+    for index,row in enumerate(rows, start=2):
+
+
+        if row["country"] == country:
+
+
+            state_sheet.update_cell(
+
+                index,
+
+                2,
+
+                qty
+
             )
-        )
 
-
-        fixed={}
-
-
-        for k,v in data.items():
-
-
-            # old format:
-            # {"qty":0}
-
-            if isinstance(v,dict):
-
-                fixed[k]=int(
-                    v.get(
-                        "qty",
-                        0
-                    )
-                )
-
-
-            else:
-
-                fixed[k]=int(v)
-
-
-
-        return fixed
-
-
-    except Exception:
-
-        return {}
+            return
 
 
 
 
 
-
-
-def save_state(state):
-
-    with open(
-        STATE_FILE,
-        "w"
-    ) as f:
-
-        json.dump(
-            state,
-            f,
-            indent=2
-        )
-
-
-
-
-
+# ==========================
+# YATA
+# ==========================
 
 
 def get_yata():
 
-    r=requests.get(
+    response = requests.get(
+
         YATA_URL,
+
         timeout=20
+
     )
 
 
-    r.raise_for_status()
+    response.raise_for_status()
 
 
-    return r.json()
-
-
-
+    return response.json()
 
 
 
@@ -218,17 +259,21 @@ def get_yata():
 
 def find_xanax(country):
 
+
     for item in country.get(
         "stocks",
         []
     ):
+
 
         if item.get(
             "name",
             ""
         ).lower()=="xanax":
 
+
             return item
+
 
 
     return None
@@ -236,16 +281,19 @@ def find_xanax(country):
 
 
 
+# ==========================
+# PREDICTION
+# ==========================
 
 
-
-def predict(country):
-
-
-    rows = events.get_all_records()
+def predict(country, info):
 
 
-    history=[]
+    rows = events_sheet.get_all_records()
+
+
+    restocks=[]
+
 
 
     for row in rows:
@@ -253,41 +301,32 @@ def predict(country):
 
         if (
 
-            row.get("event_type")=="restock"
+            row["event_type"]=="restock"
 
-            and row.get("country")==country
+            and row["country"]==country
 
         ):
 
 
-            try:
+            restocks.append(
 
-                history.append(
+                datetime.strptime(
 
-                    datetime.strptime(
+                    row["event_time"],
 
-                        row["event_time"],
+                    "%Y-%m-%d %H:%M:%S"
 
-                        "%Y-%m-%d %H:%M:%S"
-
-                    ).replace(
-                        tzinfo=CET
-                    )
-
+                ).replace(
+                    tzinfo=CET
                 )
 
-
-            except:
-
-                pass
+            )
 
 
 
+    if len(restocks)<3:
 
-    if len(history)<3:
-
-        return
-
+        return None
 
 
 
@@ -295,20 +334,71 @@ def predict(country):
     intervals=[]
 
 
-    for i in range(1,len(history)):
+
+    for i in range(1,len(restocks)):
+
 
         intervals.append(
-            history[i]-history[i-1]
+
+            restocks[i]-restocks[i-1]
+
         )
 
 
 
-    median = statistics.median(
-        intervals
+
+    weighted_seconds = sum(
+
+        x.total_seconds()*(i+1)
+
+        for i,x in enumerate(intervals)
+
+    ) / sum(
+
+        range(
+            1,
+            len(intervals)+1
+        )
+
     )
 
 
-    next_time = history[-1] + median
+
+    weighted_interval = timedelta(
+
+        seconds=weighted_seconds
+
+    )
+
+
+
+    last = restocks[-1]
+
+
+
+    raw_prediction = (
+        last
+        +
+        weighted_interval
+    )
+
+
+
+    adjusted_prediction = raw_prediction
+
+
+
+
+    leave_time = (
+
+        adjusted_prediction
+
+        -
+        timedelta(
+            minutes=info["travel"]
+        )
+
+    )
 
 
 
@@ -320,11 +410,27 @@ def predict(country):
 
             country,
 
-            "Xanax",
+            info["item"],
 
-            fmt(history[-1]),
+            fmt(last),
 
-            fmt(next_time)
+            str(weighted_interval),
+
+            fmt(raw_prediction),
+
+            fmt(adjusted_prediction),
+
+            "",
+
+            "",
+
+            "",
+
+            info["travel"],
+
+            fmt(leave_time),
+
+            "Weighted interval model"
 
         ]
 
@@ -332,28 +438,35 @@ def predict(country):
 
 
 
+    return {
+
+        "next": adjusted_prediction,
+
+        "leave": leave_time
+
+    }
 
 
 
 
+
+# ==========================
+# MAIN
+# ==========================
 
 
 def main():
 
+
     print(
-        "Tracker started",
+        "Tracker running",
         fmt(now())
-    )
-
-
-    discord(
-        "🟢 Torn Xanax tracker running "
-        + fmt(now())
     )
 
 
 
     state = load_state()
+
 
 
     data = get_yata()
@@ -363,24 +476,21 @@ def main():
     for code,info in TRACKED.items():
 
 
+
         country_data = data["stocks"].get(
             code
         )
 
 
-        if not country_data:
 
-            print(
-                "Missing YATA country",
-                code
-            )
+        if not country_data:
 
             continue
 
 
 
 
-        xanax=find_xanax(
+        xanax = find_xanax(
             country_data
         )
 
@@ -388,81 +498,50 @@ def main():
 
         if not xanax:
 
-            print(
-                "No Xanax data",
-                code
-            )
-
             continue
 
 
 
-
         qty=int(
+
             xanax.get(
                 "quantity",
                 0
             )
+
         )
 
 
 
-        old=int(
-            state.get(
-                code,
-                0
-            )
+        old = state.get(
+
+            info["country"],
+
+            0
+
         )
 
 
 
         print(
+
             info["country"],
-            "old:",
+
             old,
-            "new:",
+
             qty
+
         )
 
 
 
+        # RESTOCK
 
-        if code not in state:
-
-
-            events.append_row(
-
-                [
-
-                    fmt(now()),
-
-                    "startup",
-
-                    code,
-
-                    info["country"],
-
-                    info["id"],
-
-                    info["item"],
-
-                    "",
-
-                    qty
-
-                ]
-
-            )
+        if old==0 and qty>0:
 
 
 
-
-
-        elif old==0 and qty>0:
-
-
-
-            events.append_row(
+            events_sheet.append_row(
 
                 [
 
@@ -480,7 +559,13 @@ def main():
 
                     old,
 
-                    qty
+                    qty,
+
+                    fmt(now()),
+
+                    "YATA",
+
+                    ""
 
                 ]
 
@@ -488,28 +573,62 @@ def main():
 
 
 
-            discord(
+            prediction = predict(
 
-                f"🔔 Xanax restock {info['country']} {qty}"
+                info["country"],
+
+                info
 
             )
 
 
 
-            predict(
-                info["country"]
-            )
+            if prediction:
+
+
+                discord(
+
+f"""
+🔔 Xanax Restock Prediction
+
+Country:
+{info['country']}
+
+Current stock:
+{qty}
+
+Next expected restock:
+{fmt(prediction['next'])}
+
+Leave Torn City:
+{fmt(prediction['leave'])}
+
+Travel time:
+{info['travel']} minutes
+"""
+
+                )
+
+
+            else:
+
+
+                discord(
+
+                    f"🔔 Xanax restock detected: {info['country']} ({qty})"
+
+                )
 
 
 
-
+        # DEPLETION
 
 
         elif old>0 and qty==0:
 
 
 
-            events.append_row(
+            events_sheet.append_row(
 
                 [
 
@@ -527,7 +646,13 @@ def main():
 
                     old,
 
-                    qty
+                    qty,
+
+                    fmt(now()),
+
+                    "YATA",
+
+                    ""
 
                 ]
 
@@ -535,24 +660,19 @@ def main():
 
 
 
+        save_state(
 
+            info["country"],
 
-        state[code]=qty
+            qty
 
-
-
-
-
-
-    save_state(state)
+        )
 
 
 
     print(
         "Finished"
     )
-
-
 
 
 
