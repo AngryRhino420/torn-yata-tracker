@@ -35,25 +35,25 @@ TRACKED = {
 
     "uni": {
 
-        "country":"UK",
-        "item":"Xanax",
-        "id":206,
-        "travel":20
+        "country": "UK",
+        "item": "Xanax",
+        "id": 206,
+        "travel": 20
 
     },
 
 
     "jap": {
 
-        "country":"Japan",
-        "item":"Xanax",
-        "id":206,
-        "travel":30
+        "country": "Japan",
+        "item": "Xanax",
+        "id": 206,
+        "travel": 30
 
     }
 
-
 }
+
 
 
 
@@ -79,8 +79,9 @@ def fmt(dt):
 
 
 
+
 # ==========================
-# GOOGLE
+# GOOGLE SHEETS
 # ==========================
 
 
@@ -95,8 +96,9 @@ def google_sheet():
     if not json_key:
 
         raise Exception(
-            "Missing Google credentials"
+            "Missing GOOGLE_SERVICE_ACCOUNT_JSON"
         )
+
 
 
     with open(
@@ -108,14 +110,30 @@ def google_sheet():
 
 
 
-    creds = Credentials.from_service_account_file(
-        "google.json"
+    SCOPES = [
+
+        "https://www.googleapis.com/auth/spreadsheets",
+
+        "https://www.googleapis.com/auth/drive"
+
+    ]
+
+
+
+    credentials = Credentials.from_service_account_file(
+
+        "google.json",
+
+        scopes=SCOPES
+
     )
+
 
 
     client = gspread.authorize(
-        creds
+        credentials
     )
+
 
 
     return client.open_by_url(
@@ -127,6 +145,7 @@ def google_sheet():
 
 
 book = google_sheet()
+
 
 
 events_sheet = book.worksheet(
@@ -146,12 +165,13 @@ state_sheet = book.worksheet(
 
 
 
+
 # ==========================
 # DISCORD
 # ==========================
 
 
-def discord(msg):
+def discord(message):
 
 
     hook = os.environ.get(
@@ -167,12 +187,14 @@ def discord(msg):
             hook,
 
             json={
-                "content":msg
+                "content": message
             },
 
             timeout=10
 
         )
+
+
 
 
 
@@ -189,12 +211,15 @@ def load_state():
     rows = state_sheet.get_all_records()
 
 
+
     return {
 
-        x["country"]:
-        int(x["quantity"])
 
-        for x in rows
+        row["country"]:
+        int(row["quantity"])
+
+
+        for row in rows
 
     }
 
@@ -202,29 +227,33 @@ def load_state():
 
 
 
-def save_state(country,qty):
+
+def save_state(country, quantity):
 
 
     rows = state_sheet.get_all_records()
 
 
-    for i,row in enumerate(rows,start=2):
+
+    for index,row in enumerate(rows,start=2):
 
 
-        if row["country"]==country:
+        if row["country"] == country:
 
 
             state_sheet.update_cell(
 
-                i,
+                index,
 
                 2,
 
-                qty
+                quantity
 
             )
 
+
             return
+
 
 
 
@@ -239,7 +268,7 @@ def save_state(country,qty):
 def get_yata():
 
 
-    r=requests.get(
+    r = requests.get(
 
         YATA_URL,
 
@@ -260,19 +289,26 @@ def get_yata():
 def find_xanax(country):
 
 
-    for x in country.get(
+    for item in country.get(
+
         "stocks",
+
         []
+
     ):
 
 
-        if x.get(
+        if item.get(
+
             "name",
+
             ""
+
         ).lower()=="xanax":
 
 
-            return x
+            return item
+
 
 
     return None
@@ -281,51 +317,52 @@ def find_xanax(country):
 
 
 
+
+
 # ==========================
-# LEARNING ENGINE
+# LEARNING
 # ==========================
 
 
-def previous_prediction(country):
+def get_previous_prediction(country):
 
 
     rows = prediction_sheet.get_all_records()
 
 
-
-    found=None
+    latest=None
 
 
 
     for row in rows:
 
 
-        if row["country"]==country:
+        if row["country"] == country:
 
 
-            if row["actual_next_restock_cet"]=="":
+            if row["actual_next_restock_cet"] == "":
 
 
-                found=row
-
-
-
-    return found
+                latest=row
 
 
 
+    return latest
 
 
 
-def update_prediction_accuracy(country, actual):
 
 
-    pred = previous_prediction(
+
+def update_prediction_error(country, actual):
+
+
+    prediction = get_previous_prediction(
         country
     )
 
 
-    if not pred:
+    if not prediction:
 
         return
 
@@ -333,7 +370,7 @@ def update_prediction_accuracy(country, actual):
 
     predicted=datetime.strptime(
 
-        pred["adjusted_predicted_next_restock_cet"],
+        prediction["adjusted_predicted_next_restock_cet"],
 
         "%Y-%m-%d %H:%M:%S"
 
@@ -343,12 +380,10 @@ def update_prediction_accuracy(country, actual):
 
 
 
-    error = int(
+    error=int(
 
         (
-            actual
-            -
-            predicted
+            actual - predicted
 
         ).total_seconds()
         /
@@ -362,16 +397,24 @@ def update_prediction_accuracy(country, actual):
 
 
 
-    for i,row in enumerate(rows,start=2):
+    for index,row in enumerate(rows,start=2):
 
 
-        if row["country"]==country and row["actual_next_restock_cet"]=="":
+        if (
+
+            row["country"]==country
+
+            and
+
+            row["actual_next_restock_cet"]==""
+
+        ):
 
 
 
             prediction_sheet.update(
 
-                f"H{i}:J{i}",
+                f"H{index}:J{index}",
 
                 [[
 
@@ -393,10 +436,10 @@ def update_prediction_accuracy(country, actual):
 
 
 
-def learning_offset(country):
+def learning_adjustment(country):
 
 
-    rows=prediction_sheet.get_all_records()
+    rows = prediction_sheet.get_all_records()
 
 
     errors=[]
@@ -425,16 +468,13 @@ def learning_offset(country):
 
 
 
-
     if len(errors)<3:
 
         return timedelta(0)
 
 
 
-    avg = statistics.mean(
-        errors
-    )
+    avg = statistics.mean(errors)
 
 
 
@@ -448,31 +488,34 @@ def learning_offset(country):
 
 
 
+
+
 # ==========================
-# PREDICTION
+# PREDICT
 # ==========================
 
 
-def predict(country,info):
+def predict(country, info):
 
 
-    rows=events_sheet.get_all_records()
+    rows = events_sheet.get_all_records()
+
 
 
     history=[]
 
 
 
-    for r in rows:
+    for row in rows:
 
 
         if (
 
-            r["country"]==country
+            row["country"]==country
 
             and
 
-            r["event_type"]=="restock"
+            row["event_type"]=="restock"
 
         ):
 
@@ -481,7 +524,7 @@ def predict(country,info):
 
                 datetime.strptime(
 
-                    r["event_time"],
+                    row["event_time"],
 
                     "%Y-%m-%d %H:%M:%S"
 
@@ -517,11 +560,11 @@ def predict(country,info):
 
 
 
-    weighted = sum(
+    weighted_seconds=sum(
 
-        x.total_seconds()*(i+1)
+        interval.total_seconds()*(i+1)
 
-        for i,x in enumerate(intervals)
+        for i,interval in enumerate(intervals)
 
     ) / sum(
 
@@ -534,9 +577,9 @@ def predict(country,info):
 
 
 
-    interval=timedelta(
+    weighted_interval=timedelta(
 
-        seconds=weighted
+        seconds=weighted_seconds
 
     )
 
@@ -546,23 +589,47 @@ def predict(country,info):
 
 
 
-    raw=last+interval
+    raw_prediction = (
+
+        last
+
+        +
+
+        weighted_interval
+
+    )
 
 
 
-    correction = learning_offset(
+    correction = learning_adjustment(
         country
     )
 
 
 
-    adjusted = raw + correction
+    adjusted_prediction = (
+
+        raw_prediction
+
+        +
+
+        correction
+
+    )
 
 
 
-    leave = adjusted - timedelta(
+    leave_time = (
 
-        minutes=info["travel"]
+        adjusted_prediction
+
+        -
+
+        timedelta(
+
+            minutes=info["travel"]
+
+        )
 
     )
 
@@ -581,11 +648,11 @@ def predict(country,info):
 
             fmt(last),
 
-            str(interval),
+            str(weighted_interval),
 
-            fmt(raw),
+            fmt(raw_prediction),
 
-            fmt(adjusted),
+            fmt(adjusted_prediction),
 
             "",
 
@@ -595,9 +662,9 @@ def predict(country,info):
 
             info["travel"],
 
-            fmt(leave),
+            fmt(leave_time),
 
-            f"Learning correction: {correction}"
+            f"Learning correction {correction}"
 
         ]
 
@@ -605,7 +672,10 @@ def predict(country,info):
 
 
 
-    return adjusted,leave
+
+    return adjusted_prediction, leave_time
+
+
 
 
 
@@ -620,8 +690,11 @@ def main():
 
 
     print(
-        "Running",
+
+        "Tracker started",
+
         fmt(now())
+
     )
 
 
@@ -630,7 +703,8 @@ def main():
 
 
 
-    data=get_yata()
+    yata=get_yata()
+
 
 
 
@@ -638,7 +712,7 @@ def main():
 
 
 
-        country_data=data["stocks"].get(
+        country_data = yata["stocks"].get(
             code
         )
 
@@ -650,9 +724,11 @@ def main():
 
 
 
+
         xanax=find_xanax(
             country_data
         )
+
 
 
         if not xanax:
@@ -662,10 +738,15 @@ def main():
 
 
         qty=int(
+
             xanax.get(
+
                 "quantity",
+
                 0
+
             )
+
         )
 
 
@@ -680,6 +761,7 @@ def main():
 
 
 
+
         # RESTOCK
 
 
@@ -691,7 +773,7 @@ def main():
 
 
 
-            update_prediction_accuracy(
+            update_prediction_error(
 
                 info["country"],
 
@@ -733,7 +815,7 @@ def main():
 
 
 
-            result=predict(
+            prediction=predict(
 
                 info["country"],
 
@@ -743,10 +825,11 @@ def main():
 
 
 
-            if result:
+            if prediction:
 
 
-                nxt,leave=result
+                next_time,leave=prediction
+
 
 
                 discord(f"""
@@ -756,11 +839,11 @@ def main():
 Country:
 {info['country']}
 
-Stock:
+Current stock:
 {qty}
 
-Expected next:
-{fmt(nxt)}
+Expected next restock:
+{fmt(next_time)}
 
 Leave Torn City:
 {fmt(leave)}
@@ -769,6 +852,19 @@ Model:
 Adaptive learning enabled
 
 """)
+
+
+            else:
+
+
+                discord(
+
+                    f"🔔 Xanax restock detected {info['country']} ({qty})"
+
+                )
+
+
+
 
 
         # DEPLETION
@@ -810,6 +906,7 @@ Adaptive learning enabled
 
 
 
+
         save_state(
 
             info["country"],
@@ -822,8 +919,9 @@ Adaptive learning enabled
 
 
     print(
-        "Done"
+        "Finished"
     )
+
 
 
 
